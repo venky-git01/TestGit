@@ -136,7 +136,7 @@ This rule will be called for any application found in a plan that also has a con
         }
 
     }
-
+log.error("End of rule to test GIT");
 
 ]]></Source>
 </Rule>

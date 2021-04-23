@@ -1,0 +1,142 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Rule PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Rule created="1540494207865" language="beanshell" name="DXC_LDAP-AfterProvisioningRule" type="AfterProvisioning">
+  <Description>An IdentityIQ server-side rule that is executed after the connector's provisioning method is called. This gives the customer the ability to customize or react to anything in the ProvisioningPlan AFTER it has been sent out to the specific applications. 
+
+This rule will be called for any application found in a plan that also has a configured 'afterProvisioningRule' configured.</Description>
+  <ReferencedRules>
+    <Reference class="sailpoint.object.Rule" name="CSC_LCMRuleLibrary"/>
+  </ReferencedRules>
+  <Signature>
+    <Inputs>
+      <Argument name="log">
+        <Description>
+          The log object associated with the SailPointContext.
+        </Description>
+      </Argument>
+      <Argument name="context">
+        <Description>
+          A sailpoint.api.SailPointContext object that can be used to query the database if necessary.
+        </Description>
+      </Argument>
+      <Argument name="plan">
+        <Description>
+          The ProvisioningPlan object on its way to the Connector.
+        </Description>
+      </Argument>
+      <Argument name="application">
+        <Description>
+          The application object that references this before/after script.
+        </Description>
+      </Argument>
+      <Argument name="result">
+        <Description>
+          The ProvisioningResult object returned by the connectors provision method. This can be null and in many cases the connector will  not return a result and instead will annotate the plan's ProvisioningResult either at the plan or account level.        
+        </Description>
+      </Argument>
+    </Inputs>
+  </Signature>
+  <Source>
+<![CDATA[
+
+    import sailpoint.api.IdentityService;
+    import sailpoint.api.ObjectUtil;
+    import sailpoint.api.Provisioner;
+    import sailpoint.api.RequestManager;
+    import sailpoint.object.Attributes;
+    import sailpoint.object.Custom;
+    import sailpoint.object.EmailOptions;
+    import sailpoint.object.EmailTemplate;
+    import sailpoint.object.Identity;
+    import sailpoint.object.IdentityRequest;
+    import sailpoint.object.ProvisioningPlan;
+    import sailpoint.object.ProvisioningPlan.AccountRequest;
+    import sailpoint.object.ProvisioningPlan.AttributeRequest;
+    import sailpoint.object.ProvisioningPlan.ObjectOperation;
+    import sailpoint.object.ProvisioningResult;
+    import sailpoint.object.Request;
+    import sailpoint.object.RequestDefinition;
+    import sailpoint.object.Workflow;
+    import sailpoint.request.WorkflowRequestExecutor;
+    import sailpoint.workflow.StandardWorkflowHandler;
+
+    import org.apache.log4j.Logger;
+
+    Logger ruleLog = Logger.getLogger("rule.YuveLog");
+    if (ruleLog.isDebugEnabled()) ruleLog.debug("... in LDAP - After Provisioning Rule...");
+    if (ruleLog.isDebugEnabled()) ruleLog.debug("ProvisioningPlan is: " + plan.toXml());
+
+    Attributes args = plan.getArguments();
+    ProvisioningResult results = plan.getResult();
+    if (ruleLog.isDebugEnabled()) ruleLog.debug("get resutlts: " + results.getStatus());
+
+    String sourceEvent = null;
+    if (null != args && !args.isEmpty()) {
+      sourceEvent = args.get("sourceEvent");
+    }
+
+    if (ruleLog.isDebugEnabled()) ruleLog.debug("sourceEvent is: " + sourceEvent);
+    if (null != sourceEvent) {
+        if (sourceEvent.equals("LeaverStage1") || sourceEvent.equals("Reinstate") || sourceEvent.equals("enable") || sourceEvent.equals("disable")) {
+            String identityName = plan.getIdentity().getName();
+            String requesterId  = "spadmin";
+            String workflowName = "DXC_MoveLDAP_Accounts";
+            String identityName = plan.getIdentity().getName();
+            String caseName     = sourceEvent + " - Move LDAP accounts for " + identityName;
+            String requesterId  = "spadmin";
+
+            Workflow eventWorkflow = context.getObject(Workflow.class, workflowName);
+            if (null == eventWorkflow) {
+                ruleLog.error("Could not find a workflow named: " + workflowName);
+                throw new GeneralException("Invalid worklfow: " + workflowName);
+            }
+
+            // Simulate the request being submitted by a user. Default: spadmin.
+            Identity id = context.getObjectByName(Identity.class, requesterId);
+            if (null == id) {
+                ruleLog.error("Could not find a requester Identity: " + requesterId);
+                throw new GeneralException("Invalid identity: " + requesterId);
+            }
+
+            // Ask the Request Processor to start the workflow 60 seconds from now.
+            // Append the time stamp to the workflow case name to ensure it's unique.
+            long launchTime = System.currentTimeMillis() + 20000;
+            // caseName = caseName + "(" + launchTime + ")";
+
+            // Build out a map of arguments to pass to the Request Scheduler.
+            Attributes reqArgs = new Attributes();
+            reqArgs.put(StandardWorkflowHandler.ARG_REQUEST_DEFINITION, WorkflowRequestExecutor.DEFINITION_NAME);
+            reqArgs.put(StandardWorkflowHandler.ARG_WORKFLOW, workflowName);
+            reqArgs.put(StandardWorkflowHandler.ARG_REQUEST_NAME, caseName);
+            reqArgs.put( "requestName", caseName );
+
+
+            // Build a map of arguments to pass to the Workflow case when it launches.
+            Attributes wfArgs = new Attributes();
+            wfArgs.put("identityName", identityName);
+            wfArgs.put("plan", plan);
+            wfArgs.put("sourceEvent", sourceEvent);
+            wfArgs.put("appName", application.getName());
+            wfArgs.put("workflow", eventWorkflow.getId());
+
+            reqArgs.putAll(wfArgs);
+
+            // Use the Request Launcher to schedule the workflow reqeust.  This requires
+            // a Request object to store the properties of the request item.
+            Request req = new Request();
+            RequestDefinition reqdef = context.getObject(RequestDefinition.class, "Workflow Request");
+            req.setDefinition(reqdef);
+            req.setEventDate( new Date( launchTime ) );
+            req.setOwner(id);
+            req.setName(caseName);
+            req.setAttributes( reqdef, reqArgs );
+
+            // Schedule the workflow via the request manager.
+            RequestManager.addRequest(context, req);
+        }
+
+    }
+
+
+]]></Source>
+</Rule>

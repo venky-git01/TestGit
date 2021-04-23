@@ -1,0 +1,179 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Rule PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Rule language="beanshell" name="DXC_LDAP-BeforeProvisioningRule" type="BeforeProvisioning">
+  <Description>An IdentityIQ server-side rule that is executed after the connector's provisioning method is called. This gives the customer the ability to customize or react to anything in the ProvisioningPlan AFTER it has been sent out to the specific applications. 
+
+This rule will be called for any application found in a plan that also has a configured 'afterProvisioningRule' configured.</Description>
+  <ReferencedRules>
+    <Reference class="sailpoint.object.Rule" name="CSC_LCMRuleLibrary"/>
+  </ReferencedRules>
+  <Signature>
+    <Inputs>
+      <Argument name="log">
+        <Description>
+          The log object associated with the SailPointContext.
+        </Description>
+      </Argument>
+      <Argument name="context">
+        <Description>
+          A sailpoint.api.SailPointContext object that can be used to query the database if necessary.
+        </Description>
+      </Argument>
+      <Argument name="plan">
+        <Description>
+          The ProvisioningPlan object on its way to the Connector.
+        </Description>
+      </Argument>
+      <Argument name="application">
+        <Description>
+          The application object that references this before/after script.
+        </Description>
+      </Argument>
+      <Argument name="result">
+        <Description>
+          The ProvisioningResult object returned by the connectors provision method. This can be null and in many cases the connector will  not return a result and instead will annotate the plan's ProvisioningResult either at the plan or account level.        
+        </Description>
+      </Argument>
+    </Inputs>
+  </Signature>
+  <Source>
+<![CDATA[
+
+  import sailpoint.object.Identity;
+  import sailpoint.api.Provisioner;    
+  import sailpoint.object.ProvisioningPlan; 
+  import sailpoint.object.ProvisioningPlan.AccountRequest;
+  import sailpoint.object.ProvisioningPlan.AttributeRequest;
+  import sailpoint.object.ProvisioningPlan.AccountRequest.Operation;
+  import sailpoint.object.ProvisioningResult;
+  import sailpoint.object.IdentityRequest;
+  import sailpoint.tools.Util;
+  import sailpoint.object.Attributes;
+
+  import sailpoint.object.Link;
+  import sailpoint.object.Application;
+  import sailpoint.api.SailPointContext;
+  import sailpoint.api.IdentityService;  
+  import java.util.List;
+  import java.util.ArrayList;
+  import java.util.Map;
+  import java.util.Iterator;
+  import java.util.Hashtable;
+  import javax.naming.Context;
+  import javax.naming.InitialContext;
+  import javax.naming.ldap.LdapContext;
+  import javax.naming.NamingException;
+  import javax.naming.ldap.InitialLdapContext;
+  import javax.naming.directory.Attribute;
+  import javax.naming.directory.BasicAttribute;
+  import javax.naming.directory.DirContext;
+  import javax.naming.directory.InitialDirContext;
+  import javax.naming.directory.ModificationItem;
+
+  import sailpoint.object.Attributes;
+
+  import java.text.SimpleDateFormat;
+  import java.text.DateFormat;
+  import java.util.Calendar;
+
+  import org.apache.commons.logging.Log;
+  import org.apache.commons.logging.LogFactory;
+
+  import org.apache.log4j.Logger;
+  import org.apache.log4j.Level;
+
+  Logger ruleLog = Logger.getLogger("rule.YuveLog");
+  if (ruleLog.isDebugEnabled()) ruleLog.debug("... in LDAP before Provisioning Rule..."); 
+  if (ruleLog.isDebugEnabled()) ruleLog.debug("ProvisioningPlan in beforeRule is: " + plan.toXml());
+  
+  
+  // PasswordsRequest flow is started
+
+  AccountRequest unlockAcctReqst = new AccountRequest();
+  List accountRequests = plan.getAccountRequests();
+  if (accountRequests != null) 
+  {
+    for (AccountRequest accountRequest : accountRequests)
+    {
+      if( accountRequest.getOperation() != null && accountRequest.getOperation().equals(AccountRequest.Operation.Modify)) 
+      {
+        String nativeIdentity = accountRequest.getNativeIdentity();
+        String nativeIdentityInPlan = plan.getNativeIdentity();
+        Attributes planArguments = plan.getArguments();
+        String requestType = "";
+        String requesterName = "";
+        if (planArguments != null) {
+
+          requesterName = (String) planArguments.get("requester");
+          String identityRequestId = (String) planArguments.get("identityRequestId");
+          IdentityRequest identityRequest = context.getObject(IdentityRequest.class, identityRequestId);
+          if(identityRequest != null){
+            requestType = identityRequest.getType();
+         
+          }
+        }
+
+        String application = accountRequest.getApplication();
+        Attributes arguments = accountRequest.getArguments();
+        if(arguments != null)
+        {
+          Map map = arguments.getMap();
+          if(map !=null){
+            String flow = (String) map.get("flow");
+            if (flow != null && flow.equalsIgnoreCase("PasswordsRequest")) 
+            {
+              if(!Util.isNullOrEmpty(nativeIdentityInPlan) && !Util.isNullOrEmpty(requesterName) && nativeIdentityInPlan.equalsIgnoreCase(requesterName)){
+                accountRequest.add(new AttributeRequest("cscSMLoginDisabled",ProvisioningPlan.Operation.Set, "0"));
+                accountRequest.add(new AttributeRequest("cscSMPasswordHistory", ProvisioningPlan.Operation.Set, 0));
+              }else{
+                accountRequest.add(new AttributeRequest("cscSMLoginDisabled",ProvisioningPlan.Operation.Set, "16777216"));
+              }
+            }
+
+          }          
+        }
+
+        if(requestType != null && requestType.equalsIgnoreCase("ForgotPassword")){
+          accountRequest.add(new AttributeRequest("cscSMLoginDisabled",ProvisioningPlan.Operation.Set, "0"));
+          accountRequest.add(new AttributeRequest("cscSMPasswordHistory", ProvisioningPlan.Operation.Set, 0));
+        }
+
+      }
+
+    }
+  }		             
+
+  //PasswordRequest flow is end 
+  Attributes args = plan.getArguments();
+  String identityName = plan.getIdentity().getName();
+
+  String sourceEvent = null;
+  if (null != args && !args.isEmpty())
+    sourceEvent = args.get("sourceEvent");
+
+  String appName = application.getName();
+  String appAttrDn = "dn";
+
+  if (ruleLog.isDebugEnabled()) ruleLog.debug("sourceEvent is in beforeProvRule: " + sourceEvent);
+  
+  Identity identity = context.getObjectByName(Identity.class, identityName);
+  IdentityService identityService = new IdentityService(context);
+  String nativeIdentity = getAttibuteFromApp(identity, identityService, appName, appAttrDn); 
+  
+  if (null != sourceEvent) {
+    if(sourceEvent.equals("enable") || sourceEvent.equals("Reinstate")) {
+      AccountRequest acctReq = new AccountRequest();
+      acctReq.setApplication(appName);
+      acctReq.setNativeIdentity(nativeIdentity);
+      // set custom login enable attribute for novell edirectory
+      AttributeRequest attReq = new AttributeRequest("cscSMLoginDisabled", ProvisioningPlan.Operation.Set, "0");
+      acctReq.add(attReq);
+      acctReq.setOperation(AccountRequest.Operation.Modify);
+      plan.add(acctReq);
+    }
+  }
+
+  if (ruleLog.isDebugEnabled()) ruleLog.debug("ProvisioningPlan in beforeRule is: " + plan.toXml());    
+
+]]></Source>
+</Rule>
